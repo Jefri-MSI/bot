@@ -5,7 +5,12 @@ from telebot import types
 from datetime import datetime
 
 BOT_TOKEN = "8338126586:AAGdhwSctAd4gfxFpAzb3Sf-X5sUU8iBLmg"
-ADMINS = [1789130787, 8084962225]
+ADMINS = [1789130787, 8084962225, 8547410950]
+
+# ===== НАСТРОЙКИ КАНАЛА =====
+# Замените на ваш канал! Для публичного канала: "@ваш_канал", для приватного: -1001234567890
+CHANNEL_ID = "-1003326162278"  # Пример: "@mycoolchannel"
+CHANNEL_LINK = "https://t.me/BonussFreeGift"  # Пример: "https://t.me/mycoolchannel"
 
 LOGS_FILE = "bot_logs.json"
 
@@ -14,6 +19,53 @@ bot = telebot.TeleBot(BOT_TOKEN)
 if not os.path.exists(LOGS_FILE):
     with open(LOGS_FILE, "w", encoding="utf-8") as f:
         json.dump([], f, ensure_ascii=False, indent=2)
+
+
+def is_user_subscribed(user_id):
+    """
+    Проверяет подписку пользователя на канал.
+    Админы всегда имеют доступ.
+    """
+    if user_id in ADMINS:
+        return True
+
+    try:
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        print(f"Ошибка проверки подписки для пользователя {user_id}: {e}")
+        return False
+
+
+def show_subscription_required(chat_id):
+    """Отображает сообщение с требованием подписки"""
+    markup = types.InlineKeyboardMarkup()
+    btn_subscribe = types.InlineKeyboardButton("👉 Перейти в канал", url=CHANNEL_LINK)
+    btn_check = types.InlineKeyboardButton("✅ Проверить подписку", callback_data="check_subscription")
+    markup.add(btn_subscribe)
+    markup.add(btn_check)
+
+    bot.send_message(
+        chat_id,
+        f"🔒 Для использования бота необходимо подписаться на наш канал:\n\n{CHANNEL_LINK}\n\n"
+        "После подписки нажмите кнопку «Проверить подписку» ниже 👇",
+        reply_markup=markup,
+        disable_web_page_preview=False
+    )
+
+
+def show_main_menu(chat_id):
+    """Отображает основное меню после успешной проверки подписки"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    btn_photo = types.KeyboardButton("📸 Отправить фото")
+    btn_video = types.KeyboardButton("🎥 Отправить видео")
+    markup.add(btn_photo, btn_video)
+
+    bot.send_message(
+        chat_id,
+        "✅ Доступ разрешен! Выберите, что хотите отправить:",
+        reply_markup=markup
+    )
 
 
 def save_log(user_id, username, first_name, file_type, file_id, caption=None):
@@ -41,22 +93,47 @@ def get_logs():
         return json.load(f)
 
 
+# ===== ОБРАБОТЧИКИ =====
 @bot.message_handler(commands=["start"])
 def start_handler(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn_photo = types.KeyboardButton("📸 Отправить фото")
-    btn_video = types.KeyboardButton("🎥 Отправить видео")
-    markup.add(btn_photo, btn_video)
+    if is_user_subscribed(message.from_user.id):
+        show_main_menu(message.chat.id)
+    else:
+        show_subscription_required(message.chat.id)
 
-    bot.send_message(
-        message.chat.id,
-        "👋 Привет! Выберите, что вы хотите отправить:",
-        reply_markup=markup
-    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
+def callback_check_subscription(call):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+
+    if is_user_subscribed(user_id):
+        # Удаляем сообщение с кнопками проверки
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+
+        show_main_menu(chat_id)
+        bot.answer_callback_query(
+            call.id,
+            "✅ Подписка подтверждена! Теперь вы можете отправлять фото и видео.",
+            show_alert=True
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ Вы не подписаны на канал!\nПодпишитесь и нажмите «Проверить подписку» снова.",
+            show_alert=True
+        )
 
 
 @bot.message_handler(func=lambda message: message.text == "📸 Отправить фото")
 def photo_mode(message):
+    if not is_user_subscribed(message.from_user.id):
+        show_subscription_required(message.chat.id)
+        return
+
     markup = types.ReplyKeyboardRemove()
     bot.send_message(
         message.chat.id,
@@ -68,6 +145,10 @@ def photo_mode(message):
 
 @bot.message_handler(func=lambda message: message.text == "🎥 Отправить видео")
 def video_mode(message):
+    if not is_user_subscribed(message.from_user.id):
+        show_subscription_required(message.chat.id)
+        return
+
     markup = types.ReplyKeyboardRemove()
     bot.send_message(
         message.chat.id,
@@ -78,6 +159,11 @@ def video_mode(message):
 
 
 def handle_photo(message):
+    # Двойная проверка подписки (на случай обхода меню)
+    if not is_user_subscribed(message.from_user.id):
+        show_subscription_required(message.chat.id)
+        return
+
     if message.photo:
         file_id = message.photo[-1].file_id
         caption = message.caption
@@ -109,12 +195,19 @@ def handle_photo(message):
             message.chat.id,
             f"✅ Фото отправлено {success_count}/{len(ADMINS)} администраторам!"
         )
+        # Возвращаем меню после отправки
+        show_main_menu(message.chat.id)
     else:
         bot.send_message(message.chat.id, "⚠️ Пожалуйста, отправьте именно фото.")
         bot.register_next_step_handler(message, handle_photo)
 
 
 def handle_video(message):
+    # Двойная проверка подписки (на случай обхода меню)
+    if not is_user_subscribed(message.from_user.id):
+        show_subscription_required(message.chat.id)
+        return
+
     if message.video:
         file_id = message.video.file_id
         caption = message.caption
@@ -146,6 +239,8 @@ def handle_video(message):
             message.chat.id,
             f"✅ Видео отправлено {success_count}/{len(ADMINS)} администраторам!"
         )
+        # Возвращаем меню после отправки
+        show_main_menu(message.chat.id)
     else:
         bot.send_message(message.chat.id, "⚠️ Пожалуйста, отправьте именно видео.")
         bot.register_next_step_handler(message, handle_video)
@@ -180,19 +275,21 @@ def logs_handler(message):
 
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
+    # Блокируем все действия без подписки
+    if not is_user_subscribed(message.from_user.id):
+        show_subscription_required(message.chat.id)
+        return
+
     if message.text.startswith("/"):
         bot.send_message(message.chat.id, "❓ Неизвестная команда. Используйте /start для начала.")
     else:
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        markup.add("📸 Отправить фото", "🎥 Отправить видео")
-        bot.send_message(
-            message.chat.id,
-            "❓ Пожалуйста, выберите действие через меню:",
-            reply_markup=markup
-        )
+        # Возвращаем меню вместо эхо
+        show_main_menu(message.chat.id)
 
 
 if __name__ == "__main__":
     print("✅ Бот запущен!")
     print(f"ℹ️  Список админов: {ADMINS}")
+    print(f"📢 Требуемый канал: {CHANNEL_ID}")
+    print(f"❗ Бот должен быть администратором канала для проверки подписок")
     bot.infinity_polling()
